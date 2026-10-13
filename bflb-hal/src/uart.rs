@@ -1,54 +1,50 @@
 //! Serial I/O management on BL808.
 
-use core::ptr::addr_of;
 use core::fmt;
+use core::ptr::addr_of;
 
-use crate::arch::bl808::{Uart as UartRegs, GLB, UART0, UART1, UART2};
 use crate::arch::bl808::uart::UartBitPrd;
+use crate::arch::bl808::{Uart as UartRegs, GLB, UART0, UART1, UART2};
 
-use crate::gpio::{Pin, PinPull, PinDrive, PinFunction, Alternate};
-use crate::dma::{DmaSrcEndpoint, DmaDstEndpoint, DmaEndpointConfig, 
-    DmaPeripheral, DmaDataWidth, DmaBurstSize, DmaIncrement};
-use crate::sealed::Sealed;
 use crate::clock;
-
+use crate::dma::{
+    DmaBurstSize, DmaDataWidth, DmaDstEndpoint, DmaEndpointConfig, DmaIncrement, DmaPeripheral,
+    DmaSrcEndpoint,
+};
+use crate::gpio::{Alternate, Pin, PinDrive, PinFunction, PinPull};
+use crate::sealed::Sealed;
 
 /// Abstract definition of a UART port with write access.
 pub trait UartTxDev {
-    
     /// Synchronously write a single byte of data to the UART TX lane.
     fn write_byte(&mut self, byte: u8);
 
-    /// Synchronously write a bunch a data to the UART TX lane. 
+    /// Synchronously write a bunch a data to the UART TX lane.
     /// Default implementation just sequentially call [`write_byte`].
     fn write(&mut self, data: &[u8]) {
         for &byte in data {
             self.write_byte(byte)
         }
     }
-
 }
 
 /// Abstract definition of UART port with read access.
 pub trait UartRxDev {
-    
     /// Synchronously read a single byte of data from the UART RX, if available.
     fn read_byte(&mut self) -> Option<u8>;
-
 }
 
-
-/// Definition of an exclusive access to a UART port. This port need 
-/// to be configured in order to obtain a [`Uart`] structure that is 
+/// Definition of an exclusive access to a UART port. This port need
+/// to be configured in order to obtain a [`Uart`] structure that is
 /// actually usable for TX and/or RX communications.
-/// 
+///
 /// Available ports: 0, 1, 2.
 pub struct UartAccess<const PORT: u8>(pub(crate) ());
 
 impl<const PORT: u8> UartAccess<PORT> {
-
     /// Configure this UART port for duplex communications.
-    pub fn init_duplex<const TX_PIN: u8, const RX_PIN: u8>(self, 
+    pub fn init_duplex<const TX_PIN: u8, const RX_PIN: u8>(
+        self,
         tx: impl Into<Pin<TX_PIN, Alternate>>,
         rx: impl Into<Pin<RX_PIN, Alternate>>,
         config: &UartConfig,
@@ -62,7 +58,8 @@ impl<const PORT: u8> UartAccess<PORT> {
     }
 
     /// Configure this UART port for TX-only communications.
-    pub fn init_simplex_transmit<const TX_PIN: u8>(self, 
+    pub fn init_simplex_transmit<const TX_PIN: u8>(
+        self,
         tx: impl Into<Pin<TX_PIN, Alternate>>,
         config: &UartConfig,
     ) -> Uart<PORT, Pin<TX_PIN, Alternate>, ()> {
@@ -73,7 +70,8 @@ impl<const PORT: u8> UartAccess<PORT> {
     }
 
     /// Configure this UART port for RX-only communications.
-    pub fn init_simplex_receive<const RX_PIN: u8>(self, 
+    pub fn init_simplex_receive<const RX_PIN: u8>(
+        self,
         rx: impl Into<Pin<RX_PIN, Alternate>>,
         config: &UartConfig,
     ) -> Uart<PORT, (), Pin<RX_PIN, Alternate>> {
@@ -84,25 +82,13 @@ impl<const PORT: u8> UartAccess<PORT> {
     }
 
     fn port_tx_function() -> UartFunction {
-        match PORT {
-            0 => UartFunction::Uart0Tx,
-            1 => UartFunction::Uart1Tx,
-            2 => UartFunction::Uart2Tx,
-            _ => unreachable!()
-        }
+        UartFunction::tx(PORT)
     }
 
     fn port_rx_function() -> UartFunction {
-        match PORT {
-            0 => UartFunction::Uart0Rx,
-            1 => UartFunction::Uart1Rx,
-            2 => UartFunction::Uart2Rx,
-            _ => unreachable!()
-        }
+        UartFunction::rx(PORT)
     }
-
 }
-
 
 /// Internal trait used to dynamically know if a pin is present or not.
 pub trait UartPin: Sealed {
@@ -129,7 +115,6 @@ impl<const NUM: u8> UartPin for Pin<NUM, Alternate> {
 
 impl<const NUM: u8> UartPresentPin for Pin<NUM, Alternate> {}
 
-
 /// An initialized access to a UART port.
 pub struct Uart<const PORT: u8, Tx: UartPin, Rx: UartPin> {
     tx: Tx,
@@ -137,17 +122,20 @@ pub struct Uart<const PORT: u8, Tx: UartPin, Rx: UartPin> {
 }
 
 impl<const PORT: u8, Tx: UartPin, Rx: UartPin> Uart<PORT, Tx, Rx> {
-
-    /// Downgrade this UART port and disable it. 
+    /// Downgrade this UART port and disable it.
     pub fn downgrade(self) -> (UartAccess<PORT>, Tx, Rx) {
         // Drop will be called at the end, effectively closing the port.
-        unsafe { (UartAccess(()), addr_of!(self.tx).read(), addr_of!(self.rx).read()) }
+        unsafe {
+            (
+                UartAccess(()),
+                addr_of!(self.tx).read(),
+                addr_of!(self.rx).read(),
+            )
+        }
     }
-
 }
 
 impl<const PORT: u8, Tx: UartPin, Rx: UartPin> Drop for Uart<PORT, Tx, Rx> {
-
     fn drop(&mut self) {
         let regs = get_registers::<PORT>();
         regs.utx_cfg().modify(|reg| reg.en().clear());
@@ -155,17 +143,14 @@ impl<const PORT: u8, Tx: UartPin, Rx: UartPin> Drop for Uart<PORT, Tx, Rx> {
         Tx::pin().map(detach_pin);
         Rx::pin().map(detach_pin);
     }
-
 }
 
 impl<const PORT: u8, Tx: UartPresentPin, Rx: UartPin> UartTxDev for Uart<PORT, Tx, Rx> {
-
     fn write_byte(&mut self, byte: u8) {
         let regs = get_registers::<PORT>();
         while regs.fifo_cfg1().get().tx_fifo_count().get() == 0 {}
         regs.fifo_wdata().set(byte);
     }
-
 }
 
 /// Default implementation of write.
@@ -177,7 +162,6 @@ impl<const PORT: u8, Tx: UartPresentPin, Rx: UartPin> fmt::Write for Uart<PORT, 
 }
 
 impl<const PORT: u8, Tx: UartPin, Rx: UartPresentPin> UartRxDev for Uart<PORT, Tx, Rx> {
-
     fn read_byte(&mut self) -> Option<u8> {
         let regs = get_registers::<PORT>();
         if regs.fifo_cfg1().get().rx_fifo_count().get() != 0 {
@@ -186,13 +170,10 @@ impl<const PORT: u8, Tx: UartPin, Rx: UartPresentPin> UartRxDev for Uart<PORT, T
             None
         }
     }
-
 }
 
 impl<const PORT: u8, Tx: UartPin, Rx: UartPresentPin> DmaSrcEndpoint for Uart<PORT, Tx, Rx> {
-    
     unsafe fn configure(&mut self) -> DmaEndpointConfig {
-        
         // We configure the port to enable DMA for TX.
         let regs = get_registers::<PORT>();
         regs.fifo_cfg0().modify(|reg| reg.dma_rx_en().fill());
@@ -202,26 +183,24 @@ impl<const PORT: u8, Tx: UartPin, Rx: UartPresentPin> DmaSrcEndpoint for Uart<PO
                 0 => DmaPeripheral::Uart0Rx,
                 1 => DmaPeripheral::Uart1Rx,
                 2 => DmaPeripheral::Uart2Rx,
-                _ => unreachable!()
+                _ => unreachable!(),
             }),
             data_width: DmaDataWidth::Byte,
             burst_size: DmaBurstSize::Incr1,
             increment: DmaIncrement::Const,
-            addr: regs.fifo_rdata().0 as _
+            addr: regs.fifo_rdata().0 as _,
         }
-
     }
 
     fn close(&mut self) {
-        get_registers::<PORT>().fifo_cfg0().modify(|reg| reg.dma_rx_en().clear());
+        get_registers::<PORT>()
+            .fifo_cfg0()
+            .modify(|reg| reg.dma_rx_en().clear());
     }
-
 }
 
 impl<const PORT: u8, Tx: UartPresentPin, Rx: UartPin> DmaDstEndpoint for Uart<PORT, Tx, Rx> {
-    
     unsafe fn configure(&mut self) -> DmaEndpointConfig {
-        
         // We configure the port to enable DMA for RX.
         let regs = get_registers::<PORT>();
         regs.fifo_cfg0().modify(|reg| reg.dma_tx_en().fill());
@@ -231,20 +210,20 @@ impl<const PORT: u8, Tx: UartPresentPin, Rx: UartPin> DmaDstEndpoint for Uart<PO
                 0 => DmaPeripheral::Uart0Tx,
                 1 => DmaPeripheral::Uart1Tx,
                 2 => DmaPeripheral::Uart2Tx,
-                _ => unreachable!()
+                _ => unreachable!(),
             }),
             data_width: DmaDataWidth::Byte,
             burst_size: DmaBurstSize::Incr1,
             increment: DmaIncrement::Const,
-            addr: regs.fifo_wdata().0 as _
+            addr: regs.fifo_wdata().0 as _,
         }
-
     }
 
     fn close(&mut self) {
-        get_registers::<PORT>().fifo_cfg0().modify(|reg| reg.dma_tx_en().clear());
+        get_registers::<PORT>()
+            .fifo_cfg0()
+            .modify(|reg| reg.dma_tx_en().clear());
     }
-
 }
 
 /// Return the UART registers for the given port.
@@ -254,32 +233,49 @@ fn get_registers<const PORT: u8>() -> UartRegs {
         0 => UART0,
         1 => UART1,
         2 => UART2,
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
 
 /// Get the UART MMIO registers structure associated to the given port.
 fn init<const PORT: u8>(config: &UartConfig, enable_tx: bool, enable_rx: bool) {
-    init_internal(get_registers::<PORT>(), config, enable_tx, enable_rx);
+    init_regs(get_registers::<PORT>(), config, enable_tx, enable_rx);
 }
 
-/// Internal function used to initialize the I/O given a configuration and clocks.
-#[inline(never)]
-fn init_internal(regs: UartRegs, config: &UartConfig, enable_tx: bool, enable_rx: bool) {
-
-    // Calculate the baudrate divisor from UART frequency.
+/// Set the baudrate of both TX and RX from the UART clock frequency.
+///
+/// # Panics
+///
+/// Panics if the baudrate is zero or cannot be reached from the UART clock frequency.
+pub fn set_baudrate(regs: UartRegs, baudrate: u32) {
+    assert!(baudrate != 0, "UART baudrate must not be zero");
     let uart_freq = clock::uart::get_mcu_uart_freq();
-    let div = (uart_freq * 10 / config.baudrate + 5) / 10;
+    // Round to the nearest divisor, the period register stores the divisor minus one.
+    let div = (uart_freq as u64 * 10 / baudrate as u64 + 5) / 10;
+    assert!(
+        (1..=0x10000).contains(&div),
+        "UART baudrate out of range for the UART clock"
+    );
+    let mut bit_prd = UartBitPrd::default();
+    bit_prd.utx_period().set(div as u32 - 1);
+    bit_prd.urx_period().set(div as u32 - 1);
+    regs.bit_prd().set(bit_prd);
+}
 
+/// Initialize the UART registers given a configuration, all interrupts are left masked.
+/// This is used by this module and can be used by other drivers built on the HAL.
+///
+/// # Panics
+///
+/// Panics if the baudrate is invalid, see [`set_baudrate`].
+#[inline(never)]
+pub fn init_regs(regs: UartRegs, config: &UartConfig, enable_tx: bool, enable_rx: bool) {
     // Disable both TX and RX at start.
     regs.utx_cfg().modify(|reg| reg.en().clear());
     regs.urx_cfg().modify(|reg| reg.en().clear());
 
     // Set periods.
-    let mut bit_prd = UartBitPrd::default();
-    bit_prd.utx_period().set(div - 1);
-    bit_prd.urx_period().set(div - 1);
-    regs.bit_prd().set(bit_prd);
+    set_baudrate(regs, config.baudrate);
 
     // Modify both TX and RX registers at once.
     let mut utx_cfg = regs.utx_cfg().get();
@@ -356,24 +352,11 @@ fn init_internal(regs: UartRegs, config: &UartConfig, enable_tx: bool, enable_rx
     if enable_rx {
         regs.urx_cfg().modify(|reg| reg.en().fill());
     }
-
 }
 
 /// Internal function to attach a pin to a specific UART function.
 fn attach_pin<const NUM: u8>(pin: &mut Pin<NUM, Alternate>, func: UartFunction) {
-
-    // There are 8 u32 fields per register
-    let sig = NUM % 12;
-    let reg = sig / 8;
-    let field = (sig % 8) * 4;
-
-    let mut cfg = GLB.uart_cfg1();
-    cfg.0 = unsafe { cfg.0.add(reg as usize) };
-
-    cfg.modify(|reg| {
-        reg.0 &= !(0xF << field);
-        reg.0 |= (func as u32) << field;
-    });
+    critical_section::with(|_| attach_signal(NUM, func));
 
     pin.modify_config(|cfg| {
         cfg.set_function(PinFunction::Uart);
@@ -382,24 +365,52 @@ fn attach_pin<const NUM: u8>(pin: &mut Pin<NUM, Alternate>, func: UartFunction) 
         cfg.set_input_enable(true);
         cfg.set_smt(true);
     });
-
 }
 
-/// Internal fucntion to detach a pin from this UART.
+/// Internal function to detach a pin from this UART.
 fn detach_pin(num: u8) {
-    
-    let reg = num / 8;
-    let field = (num % 8) * 4;
-    
-    let mut cfg = GLB.uart_cfg1();
-    cfg.0 = unsafe { cfg.0.add(reg as usize) };
-
-    cfg.modify(|reg| {
-        reg.0 &= !(0xF << field);
-    });
-
+    critical_section::with(|_| detach_signal(num));
 }
 
+/// Number of UART signals, pin `N` is connected to the signal `N % 12`.
+const SIGNAL_COUNT: u8 = 12;
+
+/// Return the GLB register and field offset of the given UART signal.
+fn signal_field(sig: u8) -> (embedded_util::PtrRw<u32>, u32) {
+    // There are 8 signals of 4 bits per register, the two registers are contiguous.
+    let ptr = unsafe { (GLB.uart_cfg1().0 as *mut u32).add(sig as usize / 8) };
+    (embedded_util::PtrRw(ptr), (sig as u32 % 8) * 4)
+}
+
+/// Route the UART signal of the given pin to the given function. Any other signal that
+/// was routed to the same function is disabled, so that only this pin is used for it.
+///
+/// This must be called in a critical section because the signal registers are shared.
+pub fn attach_signal(pin: u8, func: UartFunction) {
+    let pin_sig = pin % SIGNAL_COUNT;
+    for sig in 0..SIGNAL_COUNT {
+        let (reg, field) = signal_field(sig);
+        let value = if sig == pin_sig {
+            func as u32
+        } else if (reg.get() >> field) & 0xF == func as u32 {
+            UartFunction::Disabled as u32
+        } else {
+            continue;
+        };
+        reg.modify(|reg| {
+            *reg &= !(0xF << field);
+            *reg |= value << field;
+        });
+    }
+}
+
+/// Disable the UART signal of the given pin.
+///
+/// This must be called in a critical section because the signal registers are shared.
+pub fn detach_signal(pin: u8) {
+    let (reg, field) = signal_field(pin % SIGNAL_COUNT);
+    reg.modify(|reg| *reg |= (UartFunction::Disabled as u32) << field);
+}
 
 /// Configuration structure for UART initialization.
 #[derive(Debug, Clone)]
@@ -423,22 +434,20 @@ pub struct UartConfig {
 }
 
 impl UartConfig {
-
     /// Create a new basic config with every option
     /// disabled, data bits to 8 and stop bits to 1.
     pub const fn new(baudrate: u32) -> Self {
-        Self { 
-            baudrate, 
-            parity: UartParity::None, 
-            data_bits: UartDataBits::Bits8, 
-            stop_bits: UartStopBits::Bits1, 
-            flow_control_rts: false, 
-            flow_control_cts: false, 
-            tx_fifo_threshold: 7, 
+        Self {
+            baudrate,
+            parity: UartParity::None,
+            data_bits: UartDataBits::Bits8,
+            stop_bits: UartStopBits::Bits1,
+            flow_control_rts: false,
+            flow_control_cts: false,
+            tx_fifo_threshold: 7,
             rx_fifo_threshold: 7,
         }
     }
-
 }
 
 /// Parity mode for UART.
@@ -469,22 +478,44 @@ pub enum UartStopBits {
     Bits2 = 3,
 }
 
-
-#[derive(Debug, Clone, Copy)]
+/// Function that a UART signal can be routed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 #[allow(unused)]
-enum UartFunction {
-    Uart0Rts    = 0,
-    Uart0Cts    = 1,
-    Uart0Tx     = 2,
-    Uart0Rx     = 3,
-    Uart1Rts    = 4,
-    Uart1Cts    = 5,
-    Uart1Tx     = 6,
-    Uart1Rx     = 7,
-    Uart2Rts    = 8,
-    Uart2Cts    = 9,
-    Uart2Tx     = 10,
-    Uart2Rx     = 11,
-    Disabled    = 15,
+pub enum UartFunction {
+    Uart0Rts = 0,
+    Uart0Cts = 1,
+    Uart0Tx = 2,
+    Uart0Rx = 3,
+    Uart1Rts = 4,
+    Uart1Cts = 5,
+    Uart1Tx = 6,
+    Uart1Rx = 7,
+    Uart2Rts = 8,
+    Uart2Cts = 9,
+    Uart2Tx = 10,
+    Uart2Rx = 11,
+    Disabled = 15,
+}
+
+impl UartFunction {
+    /// The TX function of the given port.
+    pub const fn tx(port: u8) -> Self {
+        match port {
+            0 => Self::Uart0Tx,
+            1 => Self::Uart1Tx,
+            2 => Self::Uart2Tx,
+            _ => panic!("invalid UART port"),
+        }
+    }
+
+    /// The RX function of the given port.
+    pub const fn rx(port: u8) -> Self {
+        match port {
+            0 => Self::Uart0Rx,
+            1 => Self::Uart1Rx,
+            2 => Self::Uart2Rx,
+            _ => panic!("invalid UART port"),
+        }
+    }
 }

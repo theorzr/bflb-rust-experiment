@@ -1,9 +1,10 @@
 [workspace]
 members = [
 	"embedded-util",
-	"bflb-hal", "bflb-rt", 
+	"bflb-embassy", "bflb-hal", "bflb-rt",
 	"usb-hal",
 	"examples/ox64-m0",
+	"examples/ox64-m0-embassy",
 ]
 resolver = "2"
 

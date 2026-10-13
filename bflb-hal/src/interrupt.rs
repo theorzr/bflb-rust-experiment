@@ -1,15 +1,15 @@
 //! All supported IRQ types depending on the selected chip.
-//! 
+//!
 //! You need a runtime crate such as `bflb-rt` in order to configure
 //! interrupts given these numbers.
 
+use core::cell::Cell;
 use core::fmt;
 
-use crate::arch::riscv::clic::Mintthresh;
 use crate::arch::bl808::CLIC;
+use crate::arch::riscv::clic::Mintthresh;
 
-use critical_section::CriticalSection;
-
+use critical_section::{CriticalSection, Mutex};
 
 /// An access to configure an interrupt number.
 #[derive(Clone, Copy)]
@@ -19,7 +19,6 @@ pub struct Interrupt {
 }
 
 impl Interrupt {
-
     /// Create a new handle to the given interrupt. You should prefer using the predefined
     /// interrupts defined in this module.
     pub const fn new(code: usize) -> Self {
@@ -45,8 +44,8 @@ impl Interrupt {
     pub fn pending(self) -> bool {
         CLIC.int(self.code).pending().get() != 0
     }
-    
-    /// Set this interrupt's pending state. Note that this is only possible to do when 
+
+    /// Set this interrupt's pending state. Note that this is only possible to do when
     /// this interrupt is configured in edge-sensitive mode. This function is unsafe
     /// because caller must guarantee that this will not cause issues in the program.
     #[inline]
@@ -60,7 +59,7 @@ impl Interrupt {
     pub fn level(self) -> u8 {
         CLIC.int(self.code).control().get()
     }
-    
+
     /// Set the current level of this interrupt, used when scheduling the interrupt.
     #[inline]
     pub unsafe fn set_level(self, level: u8) {
@@ -79,27 +78,24 @@ impl Interrupt {
             (1, 1) => InterruptTrigger::NegativeEdge,
             // Unreachable and should be optimized-out because only these patterns
             // are valid in the fields' range.
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
-    
+
     #[inline]
     pub unsafe fn set_trigger(self, trigger: InterruptTrigger) {
         CLIC.int(self.code).attr().modify(|reg| {
-    
             let (edge, neg) = match trigger {
                 InterruptTrigger::PositiveLevel => (0, 0),
                 InterruptTrigger::NegativeLevel => (0, 1),
                 InterruptTrigger::PositiveEdge => (1, 0),
                 InterruptTrigger::NegativeEdge => (1, 1),
             };
-    
+
             reg.edge_triggered().set(edge);
             reg.negative_edge().set(neg);
-    
         });
     }
-
 }
 
 impl fmt::Debug for Interrupt {
@@ -141,39 +137,57 @@ pub enum InterruptTrigger {
 pub type InterruptHandler = fn(usize, CriticalSection);
 
 /// Interrupt handler that doesn't do anything with the interrupt.
-pub fn noop_handler(_code: usize, _cs: CriticalSection) { }
+pub fn noop_handler(_code: usize, _cs: CriticalSection) {}
 
-/// This constant array can be used as a base interrupt vector to be used by the HAL and 
-/// supported by the runtime. Each handle takes a critical section token for proving that
-/// the handler is effectively running with interrupts disabled.
-pub const VECTOR: [InterruptHandler; COUNT] = {
+/// The live interrupt handlers table, dispatched by the runtime. It is initialized with
+/// the handlers of this HAL, and handlers can be replaced at runtime using
+/// [`set_handler`]. Each handler takes a critical section token for proving that the
+/// handler is effectively running with interrupts disabled.
+static HANDLERS: Mutex<[Cell<InterruptHandler>; COUNT]> = Mutex::new({
+    let mut handlers = [const { Cell::new(noop_handler as InterruptHandler) }; COUNT];
 
-    let mut handlers: [InterruptHandler; COUNT] = [noop_handler; COUNT];
-
-    handlers[MACHINE_TIMER.code] = crate::time::mtimer_handler;
+    handlers[MACHINE_TIMER.code] = Cell::new(crate::time::mtimer_handler);
 
     #[cfg(any(feature = "bl808-m0", feature = "bl808-lp"))]
     {
-        handlers[DMA0_ALL.code] = super::dma::dma0_handler;
-        handlers[DMA1_ALL.code] = super::dma::dma1_handler;
+        handlers[DMA0_ALL.code] = Cell::new(super::dma::dma0_handler);
+        handlers[DMA1_ALL.code] = Cell::new(super::dma::dma1_handler);
     }
 
     #[cfg(feature = "bl808-d0")]
     {
-        handlers[DMA2_INT0.code] = super::dma::dma2_handler;
-        handlers[DMA2_INT1.code] = super::dma::dma2_handler;
-        handlers[DMA2_INT2.code] = super::dma::dma2_handler;
-        handlers[DMA2_INT3.code] = super::dma::dma2_handler;
-        handlers[DMA2_INT4.code] = super::dma::dma2_handler;
-        handlers[DMA2_INT5.code] = super::dma::dma2_handler;
-        handlers[DMA2_INT6.code] = super::dma::dma2_handler;
-        handlers[DMA2_INT7.code] = super::dma::dma2_handler;
+        handlers[DMA2_INT0.code] = Cell::new(super::dma::dma2_handler);
+        handlers[DMA2_INT1.code] = Cell::new(super::dma::dma2_handler);
+        handlers[DMA2_INT2.code] = Cell::new(super::dma::dma2_handler);
+        handlers[DMA2_INT3.code] = Cell::new(super::dma::dma2_handler);
+        handlers[DMA2_INT4.code] = Cell::new(super::dma::dma2_handler);
+        handlers[DMA2_INT5.code] = Cell::new(super::dma::dma2_handler);
+        handlers[DMA2_INT6.code] = Cell::new(super::dma::dma2_handler);
+        handlers[DMA2_INT7.code] = Cell::new(super::dma::dma2_handler);
     }
 
     handlers
+});
 
-};
+/// Get the handler currently registered for the given interrupt code. This is used by
+/// runtimes to dispatch interrupts.
+#[inline]
+pub fn handler(code: usize, cs: CriticalSection) -> InterruptHandler {
+    HANDLERS.borrow(cs)[code].get()
+}
 
+/// Replace the handler of the given interrupt, returning the previous one.
+///
+/// This function is unsafe because replacing a handler installed by this HAL (such as
+/// the machine timer or DMA handlers) will break the drivers relying on it.
+#[inline]
+pub unsafe fn set_handler(
+    int: Interrupt,
+    handler: InterruptHandler,
+    cs: CriticalSection,
+) -> InterruptHandler {
+    HANDLERS.borrow(cs)[int.code].replace(handler)
+}
 
 /// Internal macro for easier definition.
 macro_rules! def_irq {
@@ -184,7 +198,7 @@ macro_rules! def_irq {
         )*
     ) => {
         $(
-            $(#[$meta])* 
+            $(#[$meta])*
             pub const $name: Interrupt = Interrupt::new($value);
         )*
     };

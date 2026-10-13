@@ -8,16 +8,13 @@
 // Our crate provides a global allocator usable by alloc.
 extern crate alloc;
 
-
 #[cfg(not(rt_chip_ok))]
 compile_error!("no runtime chip selected, use the crate features to select one chip");
 
-
-#[cfg(rt_chip = "bl808_m0")]
-mod bl808_m0;
 #[cfg(rt_chip = "bl808_d0")]
 mod bl808_d0;
-
+#[cfg(rt_chip = "bl808_m0")]
+mod bl808_m0;
 
 // Re-export HAL.
 pub use bflb_hal as hal;
@@ -25,16 +22,16 @@ pub use bflb_hal as hal;
 // These modules are intentionally internal.
 mod allocator;
 
-use hal::interrupt::{COUNT as INT_COUNT, VECTOR, InterruptHandler, noop_handler};
-use critical_section::CriticalSection;
 use allocator::RuntimeAllocator;
+use critical_section::CriticalSection;
+use hal::interrupt::{noop_handler, COUNT as INT_COUNT};
 
-/// Module providing externally linked symbols, defined either by 
+/// Module providing externally linked symbols, defined either by
 /// assembly or link script.
 pub mod sym {
 
     // Here we define all linker script symbols.
-    // Note that we can define all symbols as "u32", because the linker 
+    // Note that we can define all symbols as "u32", because the linker
     // script forces alignments to 4 bytes.
     extern "C" {
 
@@ -65,7 +62,7 @@ pub mod sym {
         pub static mut _ld_stack_start: u8;
         /// First word **after** the stack.
         pub static mut _ld_stack_end: u8;
-        
+
         /// First word of the heap.
         pub static mut _ld_heap_start: u8;
         /// First word **after** the heap.
@@ -74,45 +71,37 @@ pub mod sym {
         /// The default Machine Trap Generic Handler that is implemented
         /// in assembly and handles context saving and handling via
         /// exception/interrupt handlers that can be registered using
-        /// [`register_exception_handler`] and 
+        /// [`register_exception_handler`] and
         /// [`register_interrupt_handler`].
-        /// 
-        /// ***It should only be called by hardware on interrupt, only 
+        ///
+        /// ***It should only be called by hardware on interrupt, only
         /// use this as the symbol.***
         pub fn _mtrap_generic_handler() -> !;
 
     }
-
 }
-
 
 /// The global bump allocator.
 #[global_allocator]
 static ALLOCATOR: RuntimeAllocator = RuntimeAllocator::empty();
 
-/// All interrupt (asynchronous) handlers.
-static INTERRUPT_VECTOR: [InterruptHandler; INT_COUNT] = VECTOR;
-
-
-/// This function is responsible for loading mutable static variables 
-/// and zero-out uninitialized variables, all in RAM. 
-/// 
-/// **This function is really important but will only trigger on 
-/// hart 0, because memory should be initialized once, and most 
+/// This function is responsible for loading mutable static variables
+/// and zero-out uninitialized variables, all in RAM.
+///
+/// **This function is really important but will only trigger on
+/// hart 0, because memory should be initialized once, and most
 /// importantly we have kernel stack only on hart 0.**
-/// 
+///
 /// *This function should not access global variables or allocate
 /// memory.*
-/// 
+///
 /// *It is called just before entry by the assembly and should not be
 /// called from elsewhere because **it will break the program**.*
 #[no_mangle]
 extern "C" fn _rust_mem_init() {
-
     // Only hart zero initialize the memory.
     if hal::hart::hart_zero() {
         unsafe {
-
             // Copy mutable global variables to RAM.
             let src: *mut u32 = &mut sym::_ld_data_load_start;
             let dst: *mut u32 = &mut sym::_ld_data_start;
@@ -128,14 +117,11 @@ extern "C" fn _rust_mem_init() {
             let start: *mut u8 = &mut sym::_ld_heap_start;
             let end: *mut u8 = &mut sym::_ld_heap_end;
             ALLOCATOR.with(|heap| heap.init(start, end.offset_from(start) as _));
-
         }
     } else {
         // FIXME: Other harts needs to wait until hart zero finished synchronization.
     }
-
 }
-
 
 /// This function is responsible for initializing the system before
 /// calling the entry point. This function internally initialize the
@@ -144,38 +130,35 @@ extern "C" fn _rust_mem_init() {
 #[no_mangle]
 extern "C" fn _rust_init() {
     // SAFETY: We execute it once per hart.
-    unsafe { 
-        hal::init(); 
+    unsafe {
+        hal::init();
     }
 }
-
 
 /// Entry point function, called from assembly.
 /// It never returns, so the assembly just don't have to do anything after it.
 #[no_mangle]
 extern "C" fn _rust_entry() -> ! {
-
     extern "Rust" {
         /// Externally-defined main function, this should be implemented by the binary.
         fn main();
     }
 
-    unsafe { main(); }
+    unsafe {
+        main();
+    }
 
     // This function should no return: spin loop.
     loop {
         hal::hart::wait_for_interrupt();
     }
-
 }
 
-
-/// It is called on any trap after the context has been saved in the 
-/// most efficient way (when possible, only dirty registers should be 
+/// It is called on any trap after the context has been saved in the
+/// most efficient way (when possible, only dirty registers should be
 /// saved).
 #[no_mangle]
 extern "C" fn _rust_mtrap_handler(cause: usize) {
-    
     // Interrupt bit is at XLEN - 1
     const INTERRUPT_MASK: usize = 1 << (usize::BITS - 1);
     // Only use the lower 12 bits in order to be compliant with
@@ -185,34 +168,28 @@ extern "C" fn _rust_mtrap_handler(cause: usize) {
     let code = cause & CODE_MASK;
     let interrupt = cause & INTERRUPT_MASK != 0;
 
-    let handler = if interrupt {
-        INTERRUPT_VECTOR[code]
-    } else {
+    if !interrupt {
         panic!("hardware exception: {code}");
-    };
+    }
 
     // SAFETY: Interrupts are disabled by the hardware when going to interrupt handlers.
-    // We give this token to the interruption handler so it can use it and assert to 
+    // We give this token to the interruption handler so it can use it and assert to
     // mutexes that it's legal to access interrupt-free memory locations.
     let cs = unsafe { CriticalSection::new() };
-    
-    (handler)(code, cs);
 
+    (hal::interrupt::handler(code, cs))(code, cs);
 }
 
-
-/// This implementation of the panic handler will simply abort without 
+/// This implementation of the panic handler will simply abort without
 /// any message.
 #[panic_handler]
 #[cfg(feature = "panic-abort")]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-
-    // TODO: Instead of spin looping indefinitely, it might be possible 
+    // TODO: Instead of spin looping indefinitely, it might be possible
     // to close clock gates and stop the core.
     loop {
         hal::hart::wait_for_interrupt()
     }
-
 }
 
 /// This implementation of the panic handler will quickly initialize the UART TX on pin 14
@@ -220,24 +197,22 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 #[panic_handler]
 #[cfg(feature = "panic-uart-14")]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-
+    use core::fmt::Write;
     use hal::interrupt::Interrupt;
     use hal::uart::UartConfig;
     use hal::Peripherals;
-    use core::fmt::Write;
 
     // We force create a peripheral because the situation is desperate, so we
     // try to communicate the panic information through UART.
     let peripherals = unsafe { Peripherals::new() };
-    let mut uart = peripherals.uart.p0.init_simplex_transmit(
-        peripherals.gpio.p14, 
-        &UartConfig::new(115200), 
-    );
+    let mut uart = peripherals
+        .uart
+        .p0
+        .init_simplex_transmit(peripherals.gpio.p14, &UartConfig::new(115200));
 
     // Retrieve allocator information, may be useful in case of allocation crash.
-    let (alloc_cap, alloc_used, alloc_free) = ALLOCATOR.with(|heap| {
-        (heap.size(), heap.used(), heap.free())
-    });
+    let (alloc_cap, alloc_used, alloc_free) =
+        ALLOCATOR.with(|heap| (heap.size(), heap.used(), heap.free()));
 
     let _ = writeln!(uart);
     let _ = writeln!(uart, "============== Panic");
@@ -251,29 +226,30 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     let _ = writeln!(uart, "============== Interrupts");
     // let _ = writeln!(uart, "    threshold: {}", get_threshold());  // FIXME: Invalid opcode???
     for code in 0..INT_COUNT {
-        
         let int = Interrupt::new(code);
         let enabled = int.enabled();
         let pending = int.pending();
-        let handler = INTERRUPT_VECTOR[code];
+        let handler = critical_section::with(|cs| hal::interrupt::handler(code, cs));
 
         // Do not show uninteresting interrupts.
         if !enabled && !pending && handler == noop_handler {
             continue;
         }
-        
+
         let _ = write!(uart, "        {code:>5}: ");
-        if int.enabled() { let _ = write!(uart, "enabled "); }
-        if int.pending() { let _ = write!(uart, "pending "); }
+        if int.enabled() {
+            let _ = write!(uart, "enabled ");
+        }
+        if int.pending() {
+            let _ = write!(uart, "pending ");
+        }
         if handler != noop_handler {
             let _ = write!(uart, "-> {:?}", handler);
         }
         let _ = writeln!(uart);
-
     }
 
     loop {
         hal::hart::wait_for_interrupt()
     }
-    
 }
