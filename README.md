@@ -60,3 +60,7 @@ Additional documents:
 - [MIPI CSI-2](https://caxapa.ru/thumbs/799244/MIPI_Alliance_Specification_for_Camera_S.pdf)
 - [Linker Script](https://users.informatik.haw-hamburg.de/~krabat/FH-Labor/gnupro/5_GNUPro_Utilities/c_Using_LD/ldLinker_scripts.html)
 - [QSPI Flash W25Q128JW](https://www.winbond.com/hq/product/code-storage-flash-memory/serial-nor-flash/?__locale=en&partNo=W25Q128JW)
+
+## License
+
+This project is licensed under the [Apache License, Version 2.0](LICENSE).
