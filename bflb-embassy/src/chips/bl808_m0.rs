@@ -6,7 +6,7 @@ pub use bflb_hal::arch::bl808 as pac;
 pub(crate) const PIN_COUNT: usize = 46;
 
 /// Interrupt shared by all the pins, owned by the GPIO driver.
-pub(crate) const GPIO_IRQ: bflb_hal::interrupt::Interrupt = bflb_hal::interrupt::GPIO_INT0;
+pub(crate) const GPIO_IRQ: interrupt::Interrupt = bflb_hal::interrupt::GPIO_INT0;
 
 embassy_hal_internal::peripherals! {
     // GPIO

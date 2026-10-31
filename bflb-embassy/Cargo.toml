@@ -2,6 +2,7 @@
 name = "bflb-embassy"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 description = "Embassy Hardware Abstraction Layer (HAL) for BouffaloLab chips"
 keywords = ["embedded", "async", "bouffalolab", "bl808", "embedded-hal"]
 categories = ["embedded", "hardware-support", "no-std", "asynchronous"]
