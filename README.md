@@ -1,6 +1,6 @@
 # BouffaloLab Rust Experiment
-This repository is a Cargo workspace containing three lib crates and 
-an example binary crate.
+This repository is a Cargo workspace containing five lib crates and 
+example binary crates.
 
 ## BouffaloLab HAL
 This is an HAL implementation for BouffaloLab chips. It currently only 
@@ -11,6 +11,13 @@ Rust port of the official Bouffalo SDK.
 This crate provides small runtime for building and linking binaries 
 for targeting BouffaloLab chips. It also provides a bootstrap assembly
 and interrupt handling.
+
+## BouffaloLab Embassy HAL
+The crate `bflb-embassy` is an [Embassy](https://embassy.dev) HAL built on top of the
+BouffaloLab HAL, structured like the official Embassy HALs (`embassy-nrf` in particular),
+with one module per chip in `bflb-embassy/src/chips`. It currently supports the BL808 M0
+core (feature `bl808-m0`), see the `test-ox64-m0-embassy` example, and
+[its README](bflb-embassy/README.md) for the details and how to add a chip.
 
 ## Embedded HAL utilities and runtime (PoC)
 The crate `embedded-util` provides an alternative way of abstracting 
@@ -26,10 +33,13 @@ Two targets must be installed to support both RV32 and RV64:
 
 The following commands can be used to compile the examples:
 - `cargo build -p test-ox64-m0 --target riscv32imac-unknown-none-elf --release`
+- `cargo build -p test-ox64-m0-embassy --target riscv32imac-unknown-none-elf --release`
 - `cargo build -p test-ox64-d0 --target riscv64gc-unknown-none-elf --release`
 
 Get the binary file to flash:
 - `cargo objcopy -p test-ox64-m0 --target riscv32imac-unknown-none-elf --release -- -O binary test-m0.bin`
+- `cargo objcopy -p test-ox64-m0-embassy --bin test-ox64-m0-embassy --target riscv32imac-unknown-none-elf --release -- -O binary test-m0-embassy.bin`
+- `cargo objcopy -p test-ox64-m0-embassy --bin gpio_loopback --target riscv32imac-unknown-none-elf --release -- -O binary gpio-loopback.bin` (GPIO16 and GPIO17 connected, send `g` on UART0)
 - `cargo objcopy -p test-ox64-d0 --target riscv64gc-unknown-none-elf --release -- -O binary test-d0.bin`
 
 ## Under linux

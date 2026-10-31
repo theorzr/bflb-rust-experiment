@@ -55,6 +55,11 @@ macro_rules! mmio {
         $(#[$struct_meta])*
         #[derive(Clone, Copy, Eq, PartialEq)]
         $vis struct $name(pub *mut u8);
+
+        // SAFETY: This is only an address, accessing the registers is volatile.
+        unsafe impl Send for $name {}
+        unsafe impl Sync for $name {}
+
         impl $name {
 
             #[inline]

@@ -1,0 +1,15 @@
+[package]
+name = "test-ox64-m0-embassy"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+bflb-rt = { path = "../../bflb-rt", version = "0.1", features = ["bl808-m0", "panic-uart-14"] }
+bflb-embassy = { path = "../../bflb-embassy", version = "0.1", features = ["bl808-m0"] }
+
+embassy-executor = { version = "0.10", features = ["platform-riscv32", "executor-thread"] }
+embassy-time = "0.5"
+embedded-io-async = "0.7"
+static_cell = "2.1"
+embassy-futures = "0.1"
